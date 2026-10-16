@@ -6,3 +6,4 @@
 Switch_Topology_*.html
 Switch_Topology_*.pdf
 __pycache__/
+.DS_Store
