@@ -452,11 +452,13 @@ def make_link(a, b, sa, sb):
 # Layout - left-to-right tidy tree per connected component
 # --------------------------------------------------------------------------
 
-CARD_W, CARD_H = 250, 62
-COL_GAP = 230
-ROW_H = CARD_H + 16
+CARD_W, CARD_H = 280, 62      # CARD_H = base height, before port-pair rows
+COL_GAP = 210
+CARD_GAP = 16
 COMPONENT_GAP = 40
 MARGIN = 30
+PEER_HEAD_H = 20             # "↑ HG-SS-CORE · 2 × 10G" line
+PORT_ROW_H = 15              # one "xe-0/1/2 ⇄ xe-0/0/2" line per cable
 
 
 def pick_root(component, adj, nodes):
@@ -471,6 +473,33 @@ def pick_root(component, adj, nodes):
         # Prefer a Mist gateway, then the external with most links into the site.
         return max(upstream, key=lambda n: (nodes[n]["kind"] == "gateway", len(adj[n])))
     return busiest
+
+
+def peer_groups(nid, parent, children, links, nodes):
+    """Port pairs shown inside a card: the uplink to its tree parent first,
+    then any loop-closing links to non-children. Links down to its children
+    are shown in the children's cards instead."""
+    by_peer = defaultdict(list)
+    for l in links:
+        if nid not in (l["a"], l["b"]):
+            continue
+        peer = l["b"] if l["a"] == nid else l["a"]
+        if peer in children:
+            continue
+        local, remote = (l["port_a"], l["port_b"]) if l["a"] == nid else (l["port_b"], l["port_a"])
+        by_peer[peer].append({"local": local or "?", "remote": remote or "?", "speed": l["speed"],
+                              "up": l["up"], "blocked": l["blocked"]})
+    groups = []
+    for peer, rows in sorted(by_peer.items(),
+                             key=lambda kv: (kv[0] != parent, natural_key(nodes[kv[0]]["name"]))):
+        rows.sort(key=lambda r: natural_key(r["local"]))
+        groups.append({"peer": peer, "kind": "up" if peer == parent else "cross", "rows": rows})
+    return groups
+
+
+def card_height(node):
+    groups = node.get("groups") or []
+    return CARD_H + sum(PEER_HEAD_H + PORT_ROW_H * len(g["rows"]) for g in groups) + (6 if groups else 0)
 
 
 def layout(nodes, links):
@@ -498,38 +527,65 @@ def layout(nodes, links):
         components.append(comp)
     components.sort(key=len, reverse=True)
 
-    pos, tree_edges, depth_of = {}, set(), {}
-    next_y = MARGIN + 40
-    max_depth = 0
+    # BFS spanning tree per component.
+    tree_edges, depth_of, parent, children, roots = set(), {}, {}, defaultdict(list), []
     for comp in components:
         root = pick_root(comp, adj, nodes)
-        children = defaultdict(list)
-        depth_of[root] = 0
+        roots.append(root)
+        nodes[root]["root"] = True
+        depth_of[root], parent[root] = 0, None
         queue, visited = deque([root]), {root}
         while queue:
             n = queue.popleft()
             for m in sorted(adj[n], key=lambda x: natural_key(nodes[x]["name"])):
                 if m not in visited:
                     visited.add(m)
-                    depth_of[m] = depth_of[n] + 1
+                    depth_of[m], parent[m] = depth_of[n] + 1, n
                     children[n].append(m)
                     tree_edges.add(frozenset((n, m)))
                     queue.append(m)
 
-        def place(n):
-            nonlocal next_y
-            x = MARGIN + depth_of[n] * (CARD_W + COL_GAP)
-            if not children[n]:
-                pos[n] = (x, next_y)
-                next_y += ROW_H
-            else:
-                for c in children[n]:
-                    place(c)
-                ys = [pos[c][1] for c in children[n]]
-                pos[n] = (x, (ys[0] + ys[-1]) / 2)
+    heights = {}
+    for nid, node in nodes.items():
+        node["groups"] = peer_groups(nid, parent.get(nid), set(children[nid]), links, nodes)
+        heights[nid] = card_height(node)
 
+    # Tidy tree: leaves stacked by their real heights, parents centred on
+    # their children. A parent taller than its children's span pushes the
+    # whole subtree down so it never overlaps the subtree above it.
+    pos = {}
+    next_y = MARGIN + 10
+    max_depth = 0
+
+    def shift(n, dy):
+        x, y = pos[n]
+        pos[n] = (x, y + dy)
+        for c in children[n]:
+            shift(c, dy)
+
+    def place(n):
+        nonlocal next_y
+        top = next_y
+        x = MARGIN + depth_of[n] * (CARD_W + COL_GAP)
+        h = heights[n]
+        if not children[n]:
+            pos[n] = (x, top)
+        else:
+            for c in children[n]:
+                place(c)
+            first, last = children[n][0], children[n][-1]
+            centre = (pos[first][1] + heights[first] / 2 + pos[last][1] + heights[last] / 2) / 2
+            y = centre - h / 2
+            if y < top:
+                for c in children[n]:
+                    shift(c, top - y)
+                y = top
+            pos[n] = (x, y)
+        bottom = max(pos[n][1] + h, max((pos[c][1] + heights[c] for c in children[n]), default=0))
+        next_y = max(next_y, bottom + CARD_GAP)
+
+    for root, comp in zip(roots, components):
         place(root)
-        nodes[root]["root"] = True
         max_depth = max(max_depth, max(depth_of[n] for n in comp))
         next_y += COMPONENT_GAP
 
@@ -537,15 +593,18 @@ def layout(nodes, links):
     if isolated:
         iso_top = next_y + 10
         per_row = max(1, max_depth + 1)
-        for i, n in enumerate(isolated):
-            r, c = divmod(i, per_row)
-            pos[n] = (MARGIN + c * (CARD_W + COL_GAP), iso_top + 30 + r * ROW_H)
-        next_y = iso_top + 30 + ((len(isolated) - 1) // per_row + 1) * ROW_H
+        y = iso_top + 30
+        for i in range(0, len(isolated), per_row):
+            row = isolated[i:i + per_row]
+            for c, n in enumerate(row):
+                pos[n] = (MARGIN + c * (CARD_W + COL_GAP), y)
+            y += max(heights[n] for n in row) + CARD_GAP
+        next_y = y
 
     cols = max(max_depth + 1, 1)
     width = MARGIN * 2 + cols * CARD_W + (cols - 1) * COL_GAP + 160
     height = next_y + MARGIN
-    return pos, tree_edges, depth_of, iso_top, width, height
+    return pos, heights, tree_edges, depth_of, iso_top, width, height
 
 
 # --------------------------------------------------------------------------
@@ -569,15 +628,13 @@ def group_links(links):
 
 
 def edge_label(nodes, src, dst, group):
-    """Short label from src's perspective: 'xe-0/1/0 → ge-0/1/0 · 10G'."""
-    def ports_for(l, nid):
-        return l["port_a"] if l["a"] == nid else l["port_b"]
-    if len(group) == 1:
-        l = group[0]
-        sp = fmt_speed(l["speed"])
-        return f"{ports_for(l, src) or '?'} → {ports_for(l, dst) or '?'}" + (f" · {sp}" if sp else "")
-    total = sum(l["speed"] or 0 for l in group)
-    return f"{len(group)} links" + (f" · {fmt_speed(total)}" if total else "")
+    """Speed summary for the line ('10G', '2 × 10G') - port names are in the cards."""
+    return speed_summary(group)
+
+
+def speed_summary(rows):
+    speeds = Counter(fmt_speed(r["speed"]) or "?" for r in rows)
+    return " + ".join(f"{n} × {sp}" if n > 1 else sp for sp, n in speeds.items())
 
 
 def edge_title(nodes, group):
@@ -597,8 +654,32 @@ def edge_title(nodes, group):
     return "\n".join(lines)
 
 
+def card_ports(node, nodes):
+    """Port-pair rows inside a card: this switch's port ⇄ the peer's port."""
+    out, y = [], CARD_H
+    for g in node.get("groups") or []:
+        arrow = "↑" if g["kind"] == "up" else "↻"
+        peer = nodes[g["peer"]]["name"]
+        out.append(f'<line class="sep" x1="10" x2="{CARD_W - 10}" y1="{y + 2}" y2="{y + 2}"/>')
+        out.append(f'<text class="peer {g["kind"]}" x="12" y="{y + 15}">{arrow} '
+                   f'{esc(trunc(peer, 26))}</text>'
+                   f'<text class="spd" x="{CARD_W - 12}" y="{y + 15}" text-anchor="end">'
+                   f'{esc(speed_summary(g["rows"]))}</text>')
+        y += PEER_HEAD_H
+        for r in g["rows"]:
+            state = "down" if not r["up"] else ("blk" if r["blocked"] else "")
+            tag = "DOWN" if not r["up"] else ("STP blk" if r["blocked"] else fmt_speed(r["speed"]))
+            out.append(f'<g class="prow {state}">'
+                       f'<text x="20" y="{y + 11}">{esc(trunc(r["local"], 16))}</text>'
+                       f'<text x="128" y="{y + 11}" text-anchor="middle">⇄</text>'
+                       f'<text x="142" y="{y + 11}">{esc(trunc(r["remote"], 16))}</text>'
+                       f'<text x="{CARD_W - 12}" y="{y + 11}" text-anchor="end">{esc(tag)}</text></g>')
+            y += PORT_ROW_H
+    return "".join(out)
+
+
 def render_html(raw, nodes, links, skipped_external, out_path):
-    pos, tree_edges, depth_of, iso_top, width, height = layout(nodes, links)
+    pos, heights, tree_edges, depth_of, iso_top, width, height = layout(nodes, links)
     grouped = group_links(links)
 
     svg = []
@@ -614,7 +695,9 @@ def render_html(raw, nodes, links, skipped_external, out_path):
         up = all(l["up"] for l in group)
         blocked = any(l["blocked"] for l in group)
         cls = "edge" + ("" if up else " down") + (" blocked" if blocked else "") + ("" if is_tree else " cross")
-        y1, y2 = sy + CARD_H / 2, dy + CARD_H / 2
+        y1, y2 = sy + heights[src] / 2, dy + heights[dst] / 2
+        if is_tree and (nodes[dst].get("groups") or [{}])[0].get("kind") == "up":
+            y2 = dy + CARD_H + 11   # meet the child's "↑ parent" row
         if is_tree and dx > sx:
             x1, x2 = sx + CARD_W, dx
             mid = (x1 + x2) / 2
@@ -632,8 +715,10 @@ def render_html(raw, nodes, links, skipped_external, out_path):
             f'<g class="{cls}" data-a="{esc(a)}" data-b="{esc(b)}">'
             f'<title>{esc(edge_title(nodes, group))}</title>'
             f'<path d="{d}" style="stroke-width:{width_px:.1f}"/>'
-            f'<text x="{lx:.0f}" y="{ly:.0f}" text-anchor="{anchor}">{esc(edge_label(nodes, src, dst, group))}</text>'
-            f'</g>')
+            # Tree links: speeds are already in the child's card header.
+            + ("" if is_tree else
+               f'<text x="{lx:.0f}" y="{ly:.0f}" text-anchor="{anchor}">{esc(edge_label(nodes, src, dst, group))}</text>')
+            + '</g>')
 
     if iso_top is not None:
         svg.append(f'<text class="section" x="{MARGIN}" y="{iso_top + 14}">'
@@ -667,13 +752,14 @@ def render_html(raw, nodes, links, skipped_external, out_path):
             f'<g class="node {esc(kind)} {status_cls}{" root" if n.get("root") else ""}" data-id="{esc(nid)}" '
             f'data-name="{esc(n["name"].lower())}" transform="translate({x:.0f},{y:.0f})">'
             f'<title>{esc(title)}</title>'
-            f'<rect width="{CARD_W}" height="{CARD_H}" rx="10"/>'
+            f'<rect width="{CARD_W}" height="{heights[nid]}" rx="10"/>'
             f'<circle class="dot" cx="{CARD_W - 14}" cy="14" r="5"/>'
             f'<text class="icon" x="12" y="24">{icon}</text>'
-            f'<text class="name" x="32" y="23">{esc(trunc(n["name"], 24))}</text>'
-            f'<text class="sub" x="12" y="41">{esc(trunc(line2, 38))}</text>'
-            f'<text class="sub" x="12" y="55">{esc(trunc(line3, 38))}</text>'
-            f'</g>')
+            f'<text class="name" x="32" y="23">{esc(trunc(n["name"], 28))}</text>'
+            f'<text class="sub" x="12" y="41">{esc(trunc(line2, 44))}</text>'
+            f'<text class="sub" x="12" y="55">{esc(trunc(line3, 44))}</text>'
+            + card_ports(n, nodes) +
+            '</g>')
 
     # Links table
     rows = []
@@ -793,6 +879,13 @@ svg {{ display:block; transform-origin:0 0; }}
 .node .icon {{ fill:var(--accent); font-size:15px; }}
 .node .name {{ fill:var(--text); font-weight:600; font-size:13px; }}
 .node .sub {{ fill:var(--muted); font-size:11px; }}
+.node .sep {{ stroke:var(--line); }}
+.node .peer {{ fill:var(--text); font-size:11.5px; font-weight:600; }}
+.node .peer.cross {{ fill:var(--cross); }}
+.node .spd {{ fill:var(--muted); font-size:11px; }}
+.node .prow text {{ fill:var(--edge-text); font-size:11px; font-family:ui-monospace, SFMono-Regular, Menlo, monospace; }}
+.node .prow.down text {{ fill:var(--bad); font-weight:600; }}
+.node .prow.blk text {{ fill:var(--blocked); }}
 .section {{ fill:var(--muted); font-size:13px; font-weight:600; }}
 svg.focus .edge, svg.focus .node {{ opacity:.18; transition:opacity .12s; }}
 svg.focus .edge.hl, svg.focus .node.hl {{ opacity:1; }}
@@ -818,7 +911,7 @@ details li {{ margin:2px 0; }}
 <body>
 <header>
   <h1>{site} &mdash; switch topology</h1>
-  <div class="meta">{org} &middot; {cloud} &middot; read {fetched} &middot; built from switch-port LLDP neighbours</div>
+  <div class="meta">{org} &middot; {cloud} &middot; read {fetched} &middot; built from switch-port LLDP neighbours &middot; port pairs in each box: <b>this switch &#8644; upstream switch</b></div>
 </header>
 <div class="stats">{stats}</div>
 <div class="toolbar">

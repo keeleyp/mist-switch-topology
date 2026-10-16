@@ -9,7 +9,7 @@ Draws how every switch at a Juniper Mist site connects to the others, as a singl
 3. Merges the two LLDP views of each cable (A sees B, B sees A) into one link with both port names.
 4. Draws a left-to-right tree starting from the upstream device (gateway or firewall). Any link that closes a loop is drawn separately in orange, links blocked by STP are drawn grey and dashed, and links that are down are drawn red and dashed.
 
-Each switch card shows its model, IP address, ports up out of total, APs attached by LLDP, and the number of Virtual Chassis members. Hover over a switch to highlight its links, or over a link to see every port pair. The page ends with a table of every switch-to-switch link.
+Each switch card shows its model, IP address, ports up out of total, APs attached by LLDP and the number of Virtual Chassis members. It also lists every uplink cable as a port pair (this switch ⇄ upstream switch) with its speed, and any loop-closing links. Hover over a switch to highlight its links, or over a link to see every port pair. The page ends with a table of every switch-to-switch link.
 
 Non-Mist neighbours such as firewalls or third-party switches are drawn as dashed cards. In the default `uplinks` mode, only named neighbours on an STP root port or a 10G+ port are drawn, so servers and phones are left out. The rest are listed under "other LLDP neighbours not drawn".
 
