@@ -628,13 +628,13 @@ def group_links(links):
 
 
 def edge_label(nodes, src, dst, group):
-    """Speed summary for the line ('10G', '2 × 10G') - port names are in the cards."""
+    """Total speed for the line ('10G', '20G') - port names are in the cards."""
     return speed_summary(group)
 
 
 def speed_summary(rows):
-    speeds = Counter(fmt_speed(r["speed"]) or "?" for r in rows)
-    return " + ".join(f"{n} × {sp}" if n > 1 else sp for sp, n in speeds.items())
+    """Total bandwidth of a group of cables, e.g. 2 x 10G -> '20G'."""
+    return fmt_speed(sum(r["speed"] or 0 for r in rows)) or "?"
 
 
 def edge_title(nodes, group):
@@ -864,7 +864,7 @@ h1 {{ margin:0 0 4px; font-size:22px; }}
   overflow:auto; max-height:80vh; }}
 svg {{ display:block; transform-origin:0 0; }}
 .edge path {{ fill:none; stroke:var(--edge); }}
-.edge text {{ fill:var(--edge-text); font-size:11px; font-family:ui-monospace, SFMono-Regular, Menlo, monospace;
+.edge text {{ fill:var(--edge-text); font-size:11px; font-variant-numeric:tabular-nums;
   paint-order:stroke; stroke:var(--panel); stroke-width:4px; }}
 .edge.cross path {{ stroke:var(--cross); }}
 .edge.blocked path {{ stroke:var(--blocked); stroke-dasharray:6 4; }}
@@ -883,7 +883,7 @@ svg {{ display:block; transform-origin:0 0; }}
 .node .peer {{ fill:var(--text); font-size:11.5px; font-weight:600; }}
 .node .peer.cross {{ fill:var(--cross); }}
 .node .spd {{ fill:var(--muted); font-size:11px; }}
-.node .prow text {{ fill:var(--edge-text); font-size:11px; font-family:ui-monospace, SFMono-Regular, Menlo, monospace; }}
+.node .prow text {{ fill:var(--edge-text); font-size:11px; font-variant-numeric:tabular-nums; }}
 .node .prow.down text {{ fill:var(--bad); font-weight:600; }}
 .node .prow.blk text {{ fill:var(--blocked); }}
 .section {{ fill:var(--muted); font-size:13px; font-weight:600; }}
@@ -897,7 +897,7 @@ table {{ border-collapse:collapse; width:100%; background:var(--panel); border:1
   border-radius:10px; overflow:hidden; font-size:13px; }}
 th, td {{ text-align:left; padding:6px 10px; border-bottom:1px solid var(--line); }}
 th {{ color:var(--muted); font-weight:600; position:sticky; top:0; background:var(--panel); }}
-td.mono {{ font-family:ui-monospace, SFMono-Regular, Menlo, monospace; }}
+td.mono {{ font-variant-numeric:tabular-nums; }}
 td.up {{ color:var(--ok); }} td.down {{ color:var(--bad); font-weight:600; }}
 .table-wrap {{ overflow-x:auto; }}
 details {{ margin-top:14px; color:var(--muted); }}
