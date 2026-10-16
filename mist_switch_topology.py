@@ -655,7 +655,7 @@ def edge_title(nodes, group):
 
 
 def card_ports(node, nodes):
-    """Port-pair rows inside a card: this switch's port ⇄ the peer's port."""
+    """Port-pair rows inside a card: the upstream (peer) port ⇄ this switch's port."""
     out, y = [], CARD_H
     for g in node.get("groups") or []:
         arrow = "↑" if g["kind"] == "up" else "↻"
@@ -670,9 +670,9 @@ def card_ports(node, nodes):
             state = "down" if not r["up"] else ("blk" if r["blocked"] else "")
             tag = "DOWN" if not r["up"] else ("STP blk" if r["blocked"] else fmt_speed(r["speed"]))
             out.append(f'<g class="prow {state}">'
-                       f'<text x="20" y="{y + 11}">{esc(trunc(r["local"], 16))}</text>'
+                       f'<text x="20" y="{y + 11}">{esc(trunc(r["remote"], 16))}</text>'
                        f'<text x="128" y="{y + 11}" text-anchor="middle">⇄</text>'
-                       f'<text x="142" y="{y + 11}">{esc(trunc(r["remote"], 16))}</text>'
+                       f'<text x="142" y="{y + 11}">{esc(trunc(r["local"], 16))}</text>'
                        f'<text x="{CARD_W - 12}" y="{y + 11}" text-anchor="end">{esc(tag)}</text></g>')
             y += PORT_ROW_H
     return "".join(out)
@@ -911,7 +911,7 @@ details li {{ margin:2px 0; }}
 <body>
 <header>
   <h1>{site} &mdash; switch topology</h1>
-  <div class="meta">{org} &middot; {cloud} &middot; read {fetched} &middot; built from switch-port LLDP neighbours &middot; port pairs in each box: <b>this switch &#8644; upstream switch</b></div>
+  <div class="meta">{org} &middot; {cloud} &middot; read {fetched} &middot; built from switch-port LLDP neighbours &middot; port pairs in each box: <b>upstream switch &#8644; this switch</b></div>
 </header>
 <div class="stats">{stats}</div>
 <div class="toolbar">
