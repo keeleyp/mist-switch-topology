@@ -1,4 +1,8 @@
-mist_switch_topology.ini
+# Anything with a token in it - only the example is tracked
+*.ini
+!mist_switch_topology.ini.example
 *_raw.json
+*_ra.json
 Switch_Topology_*.html
+Switch_Topology_*.pdf
 __pycache__/
