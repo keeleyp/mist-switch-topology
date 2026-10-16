@@ -1048,7 +1048,11 @@ def render_html(raw, nodes, links, skipped_external, out_path, for_pdf=False):
                  ".toolbar input, .toolbar button { display: none; }\n"
                  ".canvas { overflow: visible; max-height: none; }\n"
                  "section { break-before: page; }\n"
-                 "tr { break-inside: avoid; }\n") if for_pdf else ""
+                 "tr { break-inside: avoid; }\n"
+                 "details summary { list-style: none; font-weight: 600; color: var(--text); margin-bottom: 6px; }\n"
+                 "details summary::-webkit-details-marker { display: none; }\n"
+                 "details ul { columns: 3; column-gap: 32px; font-size: 12px; }\n"
+                 "details li { break-inside: avoid; }\n") if for_pdf else ""
     page = HTML_TEMPLATE.format(
         theme_attr=' data-theme="light"' if for_pdf else "",
         print_css=print_css,
@@ -1057,7 +1061,8 @@ def render_html(raw, nodes, links, skipped_external, out_path, for_pdf=False):
         fetched=esc(raw["fetched"].replace("T", " ")),
         stats=stat_html, site_legend=site_legend, table_head=table_head, width=int(width), height=int(height), svg="\n".join(svg),
         rows="\n".join(rows) or '<tr><td colspan="8">No switch-to-switch links found.</td></tr>',
-        skipped=(f'<details><summary>{len(skipped_external)} other LLDP neighbours not drawn '
+        # A PDF can't expand a <details>, so print the list open.
+        skipped=(f'<details{" open" if for_pdf else ""}><summary>{len(skipped_external)} other LLDP neighbours not drawn '
                  f'(external_neighbours = {esc(EXTERNAL_MODE)})</summary><ul>{skipped_rows}</ul></details>'
                  if skipped_external else ""),
     )
