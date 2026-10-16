@@ -11,13 +11,16 @@ switch-to-switch graph as a single self-contained HTML page:
   - links that close a loop (redundant / STP-blocked) drawn separately
   - per-switch AP count and ports-up count, and a full links table
 
-Read-only: only GET requests are made. org_id, api_token, cloud and the site
-are read from mist_switch_topology.ini.
+Read-only: only GET requests are made. org_id, api_token and cloud are read
+from mist_switch_topology.ini; the site is picked from a list at run time.
+Output is the interactive HTML page, a PDF (printed by headless Chrome / Edge),
+or both.
 
 Usage:
-  python3 mist_switch_topology.py                 # fetch + draw
-  python3 mist_switch_topology.py --save-raw      # also keep the raw API data
-  python3 mist_switch_topology.py --offline raw.json   # redraw from saved data
+  python3 mist_switch_topology.py                         # pick site + format
+  python3 mist_switch_topology.py --site "Highgate" --format pdf
+  python3 mist_switch_topology.py --save-raw              # also keep raw API data
+  python3 mist_switch_topology.py --offline raw.json      # redraw from saved data
 """
 import argparse
 import configparser
@@ -26,10 +29,14 @@ import html
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
+import tempfile
 import time
 from collections import Counter, defaultdict, deque
 from datetime import datetime
+from pathlib import Path
 from urllib.parse import urlparse
 
 import requests
@@ -42,13 +49,15 @@ config.read(os.path.join(SCRIPT_DIR, INI_NAME))
 ORG_ID = config.get("mist", "org_id", fallback="").strip()
 API_TOKEN = config.get("mist", "api_token", fallback="").strip()
 CLOUD = config.get("mist", "cloud", fallback="").strip()
-SITE_ID = config.get("site", "site_id", fallback="").strip()
-SITE_NAME = config.get("site", "site_name", fallback="").strip()
 ROOT_NAME = config.get("topology", "root", fallback="").strip()
 EXTERNAL_MODE = config.get("topology", "external_neighbours", fallback="uplinks").strip().lower() or "uplinks"
 EXTERNAL_IGNORE = [p.strip().lower() for p in
                    config.get("topology", "external_ignore", fallback="").split(",") if p.strip()]
 OUTPUT_DIR = os.path.expanduser(config.get("output", "directory", fallback="~").strip() or "~")
+# html | pdf | both | ask (prompt each run - the default)
+OUTPUT_FORMAT = config.get("output", "format", fallback="ask").strip().lower() or "ask"
+# Chrome / Edge / Chromium used to print the PDF. Blank = look in the usual places.
+PDF_BROWSER = config.get("output", "pdf_browser", fallback="").strip()
 
 REQUEST_TIMEOUT = 60
 API_BASE = None
@@ -179,43 +188,86 @@ def fetch_org_info(host):
     return resp.json()
 
 
-def resolve_site():
-    """Return the site object for [site] site_id / site_name."""
-    if SITE_ID:
-        resp = http_get(f"{API_BASE}/sites/{SITE_ID}")
-        API_CALLS["site"] += 1
-        if resp.status_code in (403, 404):
-            sys.exit(f"Site {SITE_ID} not found / not accessible - check [site] site_id in {INI_NAME}.")
-        resp.raise_for_status()
-        site = resp.json()
-        if site.get("org_id") and site["org_id"] != ORG_ID:
-            sys.exit(f"Site {SITE_ID} belongs to org {site['org_id']}, not {ORG_ID} - check {INI_NAME}.")
-        return site
+def ask(prompt):
+    try:
+        return input(prompt).strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        sys.exit("No answer given - stopping. (Use --site / --format to run without prompts.)")
+
+
+def choose_site(wanted):
+    """Pick the site: from --site (name, part of a name, or site id), else a
+    numbered menu of the org's sites that have switches."""
     sites = api_get_pages(f"/orgs/{ORG_ID}/sites", "sites")
-    matches = [s for s in sites if s.get("name", "").lower() == SITE_NAME.lower()]
-    if not matches:
-        close = sorted(s["name"] for s in sites if SITE_NAME.lower() in s.get("name", "").lower())[:10]
-        sys.exit(f"No site named '{SITE_NAME}' in the org."
-                 + (f" Did you mean: {', '.join(close)}" if close else ""))
-    if len(matches) > 1:
-        sys.exit(f"{len(matches)} sites are named '{SITE_NAME}' - set [site] site_id instead.")
-    return matches[0]
+    inventory = api_get_pages(f"/orgs/{ORG_ID}/inventory?type=switch", "inventory")
+    switch_count = Counter(d.get("site_id") for d in inventory if d.get("site_id"))
+    sites.sort(key=lambda x: natural_key(x.get("name", "")))
+
+    if wanted:
+        w = wanted.lower()
+        exact = [x for x in sites if x["id"] == w or x.get("name", "").lower() == w]
+        matches = exact or [x for x in sites if w in x.get("name", "").lower()]
+        if len(matches) == 1:
+            return matches[0]
+        if not matches:
+            sys.exit(f"No site matches '{wanted}'.")
+        sys.exit(f"'{wanted}' matches {len(matches)} sites - be more specific:\n  "
+                 + "\n  ".join(x["name"] for x in matches[:20]))
+
+    with_switches = [x for x in sites if switch_count[x["id"]]]
+    if not with_switches:
+        sys.exit("No site in this org has any switches assigned.")
+    shown = with_switches
+    while True:
+        print(f"\nSites with switches ({len(shown)} of {len(with_switches)}):")
+        for i, x in enumerate(shown[:50], 1):
+            print(f"  {i:>3})  {x['name']}  ({switch_count[x['id']]} switches)")
+        if len(shown) > 50:
+            print(f"  ... {len(shown) - 50} more - type part of a name to narrow the list")
+        answer = ask("Site number, or part of a name to filter (q to quit): ")
+        if answer.lower() in ("q", "quit", "exit"):
+            sys.exit("Cancelled.")
+        if answer.isdigit() and 1 <= int(answer) <= min(len(shown), 50):
+            return shown[int(answer) - 1]
+        filtered = [x for x in with_switches if answer.lower() in x["name"].lower()] if answer else with_switches
+        if len(filtered) == 1:
+            return filtered[0]
+        if not filtered:
+            print(f"  No site with switches matches '{answer}'.")
+            continue
+        shown = filtered
 
 
-def fetch_raw():
-    """Everything the diagram needs, straight from the API."""
+def choose_format(wanted):
+    fmt = (wanted or OUTPUT_FORMAT).lower()
+    if fmt in ("html", "pdf", "both"):
+        return fmt
+    if fmt != "ask":
+        sys.exit(f"[output] format must be html, pdf, both or ask - not '{fmt}'.")
+    while True:
+        answer = ask("\nOutput: 1) HTML (interactive)  2) PDF  3) both  [1]: ").lower() or "1"
+        choice = {"1": "html", "2": "pdf", "3": "both", "html": "html", "pdf": "pdf", "both": "both"}.get(answer)
+        if choice:
+            return choice
+
+
+def connect():
+    """Validate the .ini settings and token; sets API_HOST / API_BASE."""
     global API_BASE, API_HOST
     if not API_TOKEN or API_TOKEN == "YOUR_API_TOKEN_HERE" or not ORG_ID or not CLOUD:
         sys.exit(f"Set org_id, api_token and cloud in {INI_NAME} before running.")
-    if not SITE_ID and not SITE_NAME:
-        sys.exit(f"Set [site] site_id or site_name in {INI_NAME}.")
     API_HOST = cloud_to_host(CLOUD)
     API_BASE = f"{API_HOST}/api/v1"
 
     org = fetch_org_info(API_HOST)
     print(f"Org:  {org.get('name')}  ({urlparse(API_HOST).netloc})")
-    site = resolve_site()
-    print(f"Site: {site.get('name')}")
+    return org
+
+
+def fetch_raw(org, site):
+    """Everything the diagram needs, straight from the API."""
+    print(f"\nSite: {site.get('name')}")
 
     print("Reading device stats...")
     devices = api_get_pages(f"/sites/{site['id']}/stats/devices?type=all", "device_stats")
@@ -678,7 +730,7 @@ def card_ports(node, nodes):
     return "".join(out)
 
 
-def render_html(raw, nodes, links, skipped_external, out_path):
+def render_html(raw, nodes, links, skipped_external, out_path, for_pdf=False):
     pos, heights, tree_edges, depth_of, iso_top, width, height = layout(nodes, links)
     grouped = group_links(links)
 
@@ -800,7 +852,19 @@ def render_html(raw, nodes, links, skipped_external, out_path):
     stat_html = "".join(f'<div class="stat"><div class="v">{v}</div><div class="k">{esc(k)}</div></div>'
                         for k, v in stats)
 
+    # PDF: one page sized to the whole diagram (vector, so it zooms cleanly),
+    # light theme, no toolbar; the links table flows onto following pages.
+    page_w = max(int(width) + 48, 1100)
+    page_h = int(height) + 260
+    print_css = (f"@page {{ size: {page_w}px {page_h}px; margin: 0; }}\n"
+                 "html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }\n"
+                 ".toolbar input, .toolbar button { display: none; }\n"
+                 ".canvas { overflow: visible; max-height: none; }\n"
+                 "section { break-before: page; }\n"
+                 "tr { break-inside: avoid; }\n") if for_pdf else ""
     page = HTML_TEMPLATE.format(
+        theme_attr=' data-theme="light"' if for_pdf else "",
+        print_css=print_css,
         title=esc(f"{site_name} switch topology"),
         site=esc(site_name), org=esc(raw["org"]["name"]), cloud=esc(raw["cloud"]),
         fetched=esc(raw["fetched"].replace("T", " ")),
@@ -815,7 +879,7 @@ def render_html(raw, nodes, links, skipped_external, out_path):
 
 
 HTML_TEMPLATE = """<!doctype html>
-<html lang="en"><head><meta charset="utf-8">
+<html lang="en"{theme_attr}><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{title}</title>
 <style>
@@ -902,6 +966,7 @@ td.up {{ color:var(--ok); }} td.down {{ color:var(--bad); font-weight:600; }}
 .table-wrap {{ overflow-x:auto; }}
 details {{ margin-top:14px; color:var(--muted); }}
 details li {{ margin:2px 0; }}
+{print_css}
 @media (max-width:640px) {{
   header, .stats, .toolbar, section {{ padding-left:16px; padding-right:16px; }}
   .canvas {{ margin:0 16px; }}
@@ -988,31 +1053,92 @@ details li {{ margin:2px 0; }}
 
 # --------------------------------------------------------------------------
 
+def find_browser():
+    """Chrome / Edge / Chromium for headless PDF printing."""
+    if PDF_BROWSER:
+        path = os.path.expanduser(PDF_BROWSER)
+        if os.path.isfile(path) or shutil.which(path):
+            return path
+        sys.exit(f"[output] pdf_browser not found: {PDF_BROWSER}")
+    candidates = [
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+        "/Applications/Chromium.app/Contents/MacOS/Chromium",
+        "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+        r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+        r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+    ]
+    for c in candidates:
+        if os.path.isfile(c):
+            return c
+    for name in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser",
+                 "microsoft-edge", "msedge", "chrome"):
+        found = shutil.which(name)
+        if found:
+            return found
+    sys.exit("PDF output needs Google Chrome, Microsoft Edge or Chromium, and none was found.\n"
+             f"Install one, or set [output] pdf_browser in {INI_NAME} to its path.")
+
+
+def print_pdf(html_path, pdf_path):
+    browser = find_browser()
+    with tempfile.TemporaryDirectory() as profile:
+        cmd = [browser, "--headless=new", "--disable-gpu", "--no-first-run",
+               f"--user-data-dir={profile}", "--no-pdf-header-footer", "--print-to-pdf-no-header",
+               f"--print-to-pdf={pdf_path}", Path(html_path).resolve().as_uri()]
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+        except subprocess.TimeoutExpired:
+            sys.exit(f"{os.path.basename(browser)} took too long printing the PDF.")
+    if not os.path.isfile(pdf_path) or os.path.getsize(pdf_path) == 0:
+        sys.exit(f"PDF printing failed ({os.path.basename(browser)}):\n{result.stderr.strip()[-1500:]}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Draw the switch-to-switch topology of a Mist site.")
+    parser.add_argument("--site", help="site name, part of a name, or site id (default: pick from a list)")
+    parser.add_argument("--format", choices=("html", "pdf", "both"),
+                        help="output format (default: [output] format in the .ini, else ask)")
     parser.add_argument("--save-raw", action="store_true", help="also save the raw API data as JSON")
     parser.add_argument("--offline", metavar="RAW_JSON", help="redraw from a file saved with --save-raw")
     args = parser.parse_args()
 
-    started = time.time()
     if args.offline:
         with open(args.offline, encoding="utf-8") as f:
             raw = json.load(f)
+        fmt = choose_format(args.format)
+        started = time.time()
     else:
-        raw = fetch_raw()
+        org = connect()
+        site = choose_site(args.site)
+        fmt = choose_format(args.format)
+        started = time.time()
+        raw = fetch_raw(org, site)
 
     nodes, links, skipped = build_graph(raw)
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     safe_site = re.sub(r"[^A-Za-z0-9_-]+", "_", raw["site"]["name"]).strip("_")
-    stamp = datetime.now().strftime("%Y%m%d_%H%M")
-    out_path = os.path.join(OUTPUT_DIR, f"Switch_Topology_{safe_site}_{stamp}.html")
-    render_html(raw, nodes, links, skipped, out_path)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    base = os.path.join(OUTPUT_DIR, f"Switch_Topology_{safe_site}_{stamp}")
+
+    outputs = []
+    if fmt in ("html", "both"):
+        render_html(raw, nodes, links, skipped, base + ".html")
+        outputs.append(base + ".html")
+    if fmt in ("pdf", "both"):
+        print("Printing PDF...")
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_html = os.path.join(tmp, "topology.html")
+            render_html(raw, nodes, links, skipped, tmp_html, for_pdf=True)
+            print_pdf(tmp_html, base + ".pdf")
+        outputs.append(base + ".pdf")
 
     if args.save_raw and not args.offline:
-        raw_path = os.path.join(OUTPUT_DIR, f"Switch_Topology_{safe_site}_{stamp}_raw.json")
-        with open(raw_path, "w", encoding="utf-8") as f:
+        with open(base + "_raw.json", "w", encoding="utf-8") as f:
             json.dump(raw, f, indent=1)
-        print(f"Raw data:  {raw_path}")
+        outputs.append(base + "_raw.json")
 
     switches = sum(n["kind"] == "switch" for n in nodes.values())
     # Non-Mist neighbours never report LLDP back, so only count Mist-Mist links.
@@ -1022,8 +1148,10 @@ def main():
           f"({one_sided} switch-to-switch links seen from one side only), "
           f"{len(skipped)} LLDP neighbours not drawn")
     if API_CALLS:
-        print(f"{sum(API_CALLS.values())} API calls in {time.time() - started:.1f}s")
-    print(f"Diagram:   {out_path}")
+        print(f"{sum(API_CALLS.values())} API calls")
+    print(f"Done in {time.time() - started:.1f}s")
+    for path in outputs:
+        print(f"  {path}")
 
 
 if __name__ == "__main__":

@@ -9,12 +9,6 @@ api_token = YOUR_API_TOKEN_HERE
 # work. Required.
 cloud =
 
-[site]
-# The site to draw. Set site_id (from the portal URL), or site_name if you
-# prefer - site_id wins when both are set.
-site_id =
-site_name =
-
 [topology]
 # Device to draw at the left of the diagram (switch name, gateway name or an
 # LLDP neighbour name). Blank = pick automatically: the upstream device
@@ -31,8 +25,16 @@ external_neighbours = uplinks
 external_ignore =
 
 [output]
-# Folder the HTML diagram is written to. Default: your home folder.
+# Folder the diagram is written to. Default: your home folder.
 directory = ~
+# html  - interactive page (zoom, search, hover to highlight links)
+# pdf   - one large vector page with the whole diagram, then the links table
+# both  - one of each
+# ask   - ask each run (default). --format on the command line overrides this.
+format = ask
+# PDF printing uses Chrome, Edge or Chromium in headless mode. Leave blank to
+# find it automatically; set a full path if it lives somewhere unusual.
+pdf_browser =
 
 # Optional - only needed if you're behind a TLS-inspecting proxy (e.g.
 # Zscaler). Delete this whole section, or leave the values blank, to use

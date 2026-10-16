@@ -20,17 +20,36 @@ pip install -r requirements.txt
 cp mist_switch_topology.ini.example mist_switch_topology.ini
 ```
 
-Fill in `org_id`, `api_token`, `cloud`, and either `site_id` (from the portal URL) or `site_name`.
+Fill in `org_id`, `api_token` and `cloud`. The site isn't set in the `.ini`: you pick it each run.
 
 ## Run
 
 ```bash
-python3 mist_switch_topology.py                       # fetch + draw
+python3 mist_switch_topology.py
+```
+
+The script lists the org's sites that have switches, with a switch count for each. Type a number to pick one, or part of a name to narrow the list. It then asks which output you want:
+
+- **HTML:** the interactive page (zoom, search, hover to highlight links).
+- **PDF:** one large vector page with the whole diagram, followed by the links table. It's printed by headless Chrome, Edge or Chromium, whichever is installed. Set `[output] pdf_browser` if yours is somewhere unusual.
+- **Both.**
+
+To skip the prompts (for example when scheduling runs):
+
+```bash
+python3 mist_switch_topology.py --site "Highgate School" --format pdf
+```
+
+`--site` takes a site name, part of a name or a site ID. `[output] format` in the `.ini` sets a default format so the script doesn't ask.
+
+Other options:
+
+```bash
 python3 mist_switch_topology.py --save-raw            # also keep the raw API data
 python3 mist_switch_topology.py --offline <raw.json>  # redraw from saved data
 ```
 
-The output is `Switch_Topology_<site>_<timestamp>.html` in `[output] directory`. One site takes about 8 API calls.
+Output files are named `Switch_Topology_<site>_<timestamp>.html` or `.pdf` and go in `[output] directory`. One site takes about 10 API calls.
 
 ## Proxy / Zscaler
 
