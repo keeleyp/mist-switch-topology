@@ -1,0 +1,50 @@
+[mist]
+org_id = YOUR_ORG_ID_HERE
+# Paste an API token that has access to this org (created on the gc3 cloud).
+api_token = YOUR_API_TOKEN_HERE
+# Mist cloud the org lives on - matches the portal you log in to:
+#   api.mist.com (US / Global 01)  api.eu.mist.com (EU)  api.gc1.mist.com
+#   api.gc2.mist.com  api.gc3.mist.com (EMEA 02)  api.gc4.mist.com ...
+# Short forms (eu, gc3) and portal URLs (https://manage.gc3.mist.com) also
+# work. Required.
+cloud =
+
+[site]
+# The site to draw. Set site_id (from the portal URL), or site_name if you
+# prefer - site_id wins when both are set.
+site_id =
+site_name =
+
+[topology]
+# Device to draw at the left of the diagram (switch name, gateway name or an
+# LLDP neighbour name). Blank = pick automatically: the upstream device
+# (gateway / firewall) above the busiest switch, else the busiest switch.
+root =
+# Non-Mist LLDP neighbours (firewalls, third-party switches, routers):
+#   uplinks - only ones that look like infrastructure: seen on an STP root
+#             port, on a 10G+ port, or on more than one port (default)
+#   all     - every non-AP LLDP neighbour (can include phones / PCs)
+#   none    - Mist switches and gateways only
+external_neighbours = uplinks
+# Comma-separated name patterns of LLDP neighbours never to draw
+# (shell wildcards, case-insensitive), e.g. SEP*, *phone*
+external_ignore =
+
+[output]
+# Folder the HTML diagram is written to. Default: your home folder.
+directory = ~
+
+# Optional - only needed if you're behind a TLS-inspecting proxy (e.g.
+# Zscaler). Delete this whole section, or leave the values blank, to use
+# normal system defaults (certifi's CA store, and the HTTP_PROXY /
+# HTTPS_PROXY / NO_PROXY environment variables if set).
+[network]
+# Path to a PEM file with your proxy's root CA certificate (or a bundle
+# that includes it).
+ca_bundle =
+# Only set this to false if you have no way to obtain the proxy's CA
+# certificate. This disables TLS certificate verification entirely.
+verify_ssl = true
+# Explicit proxy overrides - usually unnecessary.
+http_proxy =
+https_proxy =
